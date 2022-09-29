@@ -1,0 +1,254 @@
+####################################
+#biblioteas
+import streamlit as st
+import pandas as pd
+import geopandas
+import folium
+import numpy as np
+from datetime import datetime, time
+from streamlit_folium import folium_static
+from folium.plugins import MarkerCluster
+import plotly.express as px
+####################################
+st.set_page_config( layout='wide' )
+st.title('House Rocket Company')
+st.markdown('Welcome to House Rocket Data Analysis')
+st.header('Load data')
+
+####################################
+#Functions
+@st.cache( allow_output_mutation=True )
+def get_data(path):
+    df = pd.read_csv(path)
+    df['date'] = pd.to_datetime(df['date'])
+    return df
+
+@st.cache( allow_output_mutation=True )
+def get_geofile( url ):
+    geofile = geopandas.read_file( url )
+    return geofile
+####################################
+
+
+####################################
+    #Extract
+####################################
+
+
+####################################
+    #Transformation
+def price_m(df):
+    df['price_m2'] = df['price'] / df['sqft_lot']
+    return df
+####################################
+
+
+####################################
+    #Load
+#filters
+def overview(df):
+    f_zipcode = st.sidebar.multiselect('Enter zipcode', df['zipcode'].unique())
+    st.title('House Rocket Map')
+
+    #criando condições para meu filtro acima funcionar
+    st.title( 'Data Overview' )
+    if ( f_zipcode != [] ):
+        df = df.loc[df['zipcode'].isin( f_zipcode ), :]
+    else:
+        df = df.copy()
+
+    st.write( df.head() )
+
+    #criando bloco duplo de paineis no app (avg metrics e statistic descriptive)
+    c1, c2 = st.beta_columns((1, 1) )
+
+    # Average metrics
+    df1 = df[['id', 'zipcode']].groupby( 'zipcode' ).count().reset_index()
+    df2 = df[['price', 'zipcode']].groupby( 'zipcode').mean().reset_index()
+    df3 = df[['sqft_living', 'zipcode']].groupby( 'zipcode').mean().reset_index()
+    df4 = df[['price_m2', 'zipcode']].groupby( 'zipcode').mean().reset_index()
+    m1 = pd.merge( df1, df2, on='zipcode', how='inner' )
+    m2 = pd.merge( m1, df3, on='zipcode', how='inner' )
+    df5 =pd.merge( m2, df4, on='zipcode', how='inner' )
+    df5.columns = ['ZIPCODE', 'TOTAL HOUSES', 'PRICE', 'SQRT LIVING', 'PRICe/M2']
+    c1.header( 'Average Values' )
+    c1.dataframe( df5, height=600, width= 800 )
+
+    # Statistic Descriptive
+    num_attributes = df.select_dtypes( include=['int64', 'float64'] )
+    media = pd.DataFrame( num_attributes.apply( np.mean ) )
+    mediana = pd.DataFrame( num_attributes.apply( np.median ) )
+    std = pd.DataFrame( num_attributes.apply( np.std ) )
+    max_ = pd.DataFrame( num_attributes.apply( np.max ) )
+    min_ = pd.DataFrame( num_attributes.apply( np.min ) )
+    df1 = pd.concat([max_, min_, media, mediana, std], axis=1 ).reset_index()
+    df1.columns = ['attributes', 'max', 'min', 'mean', 'median', 'std']
+    c2.header( 'Descriptive Analysis' )
+    c2.dataframe( df1, height=600, width= 800 )
+    return None
+
+def mapas(df, geofile):
+    price_slider = st.slider('Price Range', int(df['price'].min()), int(df['price'].max()), int(df['price'].mean()))
+    #criando meu mapa
+    is_check = st.checkbox('Display map')
+    if is_check:
+        #select row
+        house = df[df['price'] < price_slider][['id', 'lat', 'long', 'price']]
+        fig = px.scatter_mapbox(house,
+                             lat='lat',
+                             lon='long',
+                             size='price',
+                             size_max=15,
+                             zoom=10)
+        fig.update_layout(mapbox_style='open-street-map')
+        fig.update_layout(height=400,width=1500 ,margin={'r':0, 'b':0, 'l':0, 't':0});
+        st.plotly_chart(fig)
+
+    #criando bloco duplo de pmapas (mapa básico e de densidade)
+    st.title('Region Overview')
+    c1, c2 = st.beta_columns((1, 1))
+    c1.header('Portfolio Density')
+    df1 = df.sample(10)
+
+    # Base Map - Folium
+
+    
+
+    density_map = folium.Map(location=[df['lat'].mean(), df['long'].mean()], default_zoom_start=15)
+    marker_cluster = MarkerCluster().add_to(density_map)
+    for name, row in df1.iterrows():
+        folium.Marker([row['lat'], row['long']],
+                      popup='Sold R${0} on: {1}. Features: {2} sqft, {3} bedrooms, {4} bathrooms, year built: {5}'.format(
+                          row['price'],
+                          row['date'],
+                          row['sqft_living'],
+                          row['bedrooms'],
+                          row['bathrooms'],
+                          row['yr_built'])).add_to(marker_cluster)
+    with c1:
+        folium_static(density_map)
+
+    # Region Price Map
+    c2.header('Price Density')
+    dff = df1[['price', 'zipcode']].groupby('zipcode').mean().reset_index()
+    dff.columns = ['ZIP', 'PRICE']
+    geofile = geofile[geofile['ZIP'].isin(dff['ZIP'].tolist())]
+    region_price_map = folium.Map(location=[df1['lat'].mean(), df1['long'].mean()], default_zoom_start=15)
+    region_price_map.choropleth(data=dff,
+                                geo_data=geofile,
+                                columns=['ZIP', 'PRICE'],
+                                key_on='feature.properties.ZIP',
+                                fill_color='YlOrRd',
+                                fill_opacity=0.7,
+                                line_opacity=0.2,
+                                legend_name='AVG PRICE')
+    with c2:
+        folium_static(region_price_map)
+    return None
+
+def dados_comerciais(df):
+    #dados comerciais
+    st.sidebar.title( 'Commercial Options' )
+    st.title( 'Commercial Attributes' )
+
+    # ---------- Average Price per year built
+    # setup filters
+    min_year_built = int( df['yr_built'].min() )
+    max_year_built = int( df['yr_built'].max() )
+    st.sidebar.subheader( 'Select Max Year Built' )
+    f_year_built = st.sidebar.slider( 'Year Built', min_year_built, max_year_built, min_year_built )
+    st.header( 'Average price per year built' )
+    # get data
+    df['date'] = pd.to_datetime( df['date'] ).dt.strftime( '%Y-%m-%d' )
+    df1 = df.loc[df['yr_built'] < f_year_built]
+    df1 = df1[['yr_built', 'price']].groupby( 'yr_built' ).mean().reset_index()
+    fig = px.line( df1, x='yr_built', y='price' )
+    st.plotly_chart( fig, use_container_width=True )
+
+    # ---------- Average Price per day
+    st.header( 'Average Price per day' )
+    st.sidebar.subheader( 'Select Max Date' )
+    # setup filters
+    min_date = datetime.strptime( df['date'].min(), '%Y-%m-%d' )
+    max_date = datetime.strptime( df['date'].max(), '%Y-%m-%d' )
+    f_date = st.sidebar.slider( 'Date', min_date, max_date, min_date )
+    # get data
+    df['date'] = pd.to_datetime( df['date'] )
+    df1 = df[df['date'] < f_date]
+    df1 = df1[['date', 'price']].groupby( 'date' ).mean().reset_index()
+    fig = px.line( df1, x='date', y='price' )
+    st.plotly_chart( fig, use_container_width=True )
+
+    # ---------- Histogram -----------
+    st.header( 'Price Distribuition' )
+    st.sidebar.subheader( 'Select Max Price' )
+    # filters
+    min_price = int( df['price'].min() )
+    max_price = int( df['price'].max() )
+    avg_price = int( df['price'].mean() )
+    f_price = st.sidebar.slider( 'Price', min_price, max_price, avg_price )
+    df1 = df[df['price'] < f_price]
+    fig = px.histogram( df1, x='price', nbins=50 )
+    st.plotly_chart( fig, use_container_width=True )
+    return None
+
+def dados_fisicos(df):
+
+    #dados físicos dos imóveis
+    st.sidebar.title( 'Attributes Options' )
+    st.title( 'House Attributes' )
+    # filters
+    f_bedrooms = st.sidebar.selectbox( 'Max number of bedrooms', sorted( set( df['bedrooms'].unique() ) ) )
+    f_bathrooms = st.sidebar.selectbox( 'Max number of bath', sorted( set( df['bathrooms'].unique() ) ) )
+    f_floors = st.sidebar.selectbox('Max number of floors', sorted( set( df['floors'].unique() ) ) )
+    f_waterview = st.sidebar.checkbox('Only House with Water View' )
+    #criando bloco duplo gráficos(casas por quartos e por banheiros)
+    c1, c2 = st.beta_columns( 2 )
+    # Houses per bedrooms
+    c1.header( 'Houses per bedrooms' )
+    df1 = df[df['bedrooms'] < f_bedrooms]
+    fig = px.histogram( df1, x='bedrooms', nbins=19 )
+    c1.plotly_chart( fig, use_containder_width=True )
+    # Houses per bathrooms
+    c2.header( 'Houses per bathrooms' )
+    df1 = df[df['bathrooms'] < f_bathrooms]
+    fig = px.histogram( df1, x='bathrooms', nbins=10 )
+    c2.plotly_chart( fig, use_containder_width=True )
+    #criando bloco duplo gráficos(casas andares e por vista pra água)
+    c1, c2 = st.beta_columns( 2 )
+    # Houses per floors
+    c1.header( 'Houses per floors' )
+    df1 = df[df['floors'] < f_floors]
+    fig = px.histogram( df1, x='floors', nbins=19)
+    c1.plotly_chart( fig, use_containder_width=True )
+    # Houses per water view
+    if f_waterview:
+        df1 = df[df['waterfront'] == 1]
+    else:
+        df1 = df.copy()
+    fig = px.histogram( df1, x='waterfront', nbins=10 )
+    c2.header( 'Houses per water view' )
+    c2.plotly_chart( fig, use_containder_width=True )
+    return None
+####################################
+
+####################################
+#ETL
+if __name__ == '__main__':
+    #Extract
+    df_raw = get_data('kc_house_data.csv')
+    df_geofile = get_geofile('https://opendata.arcgis.com/datasets/83fc2e72903343aabff6de8cb445b81c_2.geojson')
+
+    #Transform
+    df_completo = price_m(df_raw)
+
+    overview(df_completo)
+
+    mapas(df_raw, df_geofile)
+
+    dados_comerciais(df_raw)
+
+    dados_fisicos(df_raw)
+
+
+
